@@ -152,11 +152,11 @@ mod tests {
     }
 
     #[test]
-    fn simple_inputs_map_or_drop_cleanly() {
+    fn simple_inputs_map_cleanly() {
         let string_input = map(&json!({"model": "gpt-4o-mini", "instructions": "", "input": "Hello"}));
         let object_input = map(&json!({"model": "gpt-4o-mini", "input": {"role": "developer", "content": "terse"}}));
         let no_input = map(&json!({"model": "gpt-4o-mini"}));
-        let unsupported_input = map(&json!({"model": "gpt-4o-mini", "input": 42}));
+        let null_input = map(&json!({"model": "gpt-4o-mini", "input": null}));
 
         assert_eq!(string_input["messages"], json!([{"role": "user", "content": "Hello"}]));
         assert_eq!(
@@ -164,7 +164,17 @@ mod tests {
             json!([{"role": "developer", "content": "terse"}])
         );
         assert_eq!(no_input["messages"], Value::Array(Vec::new()));
-        assert_eq!(unsupported_input["messages"], Value::Array(Vec::new()));
+        assert_eq!(null_input["messages"], Value::Array(Vec::new()));
+    }
+
+    #[test]
+    fn scalar_input_returns_error() {
+        let error = map_error(&json!({"model": "gpt-4o-mini", "input": 42}));
+
+        assert_eq!(
+            error,
+            "unsupported Responses input type for Chat Completions translation: number"
+        );
     }
 
     #[test]
@@ -637,6 +647,82 @@ mod tests {
     }
 
     #[test]
+    fn scalar_message_content_returns_error() {
+        let error = map_error(&json!({
+            "model": "m",
+            "input": [{"role": "user", "content": 42}]
+        }));
+
+        assert_eq!(
+            error,
+            "Responses message input item field `content` must be a string or array of content parts"
+        );
+    }
+
+    #[test]
+    fn object_message_content_returns_error() {
+        let error = map_error(&json!({
+            "model": "m",
+            "input": [{"role": "user", "content": {"unexpected": "shape"}}]
+        }));
+
+        assert_eq!(
+            error,
+            "Responses message input item field `content` must be a string or array of content parts"
+        );
+    }
+
+    #[test]
+    fn text_content_part_with_non_string_text_returns_error() {
+        let error = map_error(&json!({
+            "model": "m",
+            "input": [{"role": "user", "content": [{"type": "output_text", "text": 42}]}]
+        }));
+
+        assert_eq!(
+            error,
+            "unsupported Responses content part for Chat Completions translation: \
+             text content part requires a string `text` field"
+        );
+    }
+
+    #[test]
+    fn non_string_call_id_returns_error() {
+        let error = map_error(&json!({
+            "model": "m",
+            "input": [{"type": "function_call", "call_id": 123, "name": "f", "arguments": "{}"}]
+        }));
+
+        assert_eq!(
+            error,
+            "Responses function_call input item field `call_id` must be a string"
+        );
+    }
+
+    #[test]
+    fn non_string_function_call_arguments_returns_error() {
+        let error = map_error(&json!({
+            "model": "m",
+            "input": [{"type": "function_call", "call_id": "call_1", "name": "f", "arguments": 42}]
+        }));
+
+        assert_eq!(
+            error,
+            "Responses function_call input item field `arguments` must be a string"
+        );
+    }
+
+    #[test]
+    fn non_string_input_item_type_returns_error() {
+        let error = map_error(&json!({
+            "model": "m",
+            "input": [{"type": 42, "role": "user", "content": "hi"}]
+        }));
+
+        assert_eq!(error, "Responses input item field `type` must be a string");
+    }
+
+    #[test]
     fn unsupported_typed_input_items_are_rejected() {
         let error = super::chat_completions::responses_request_to_chat_request(&json!({
             "model": "gpt-4o-mini",
@@ -739,7 +825,7 @@ mod tests {
                 "type": "function_call",
                 "call_id": "call_weather",
                 "name": "lookup_weather",
-                "arguments": {"city": "NYC"}
+                "arguments": "{\"city\":\"NYC\"}"
             }
         }));
 
@@ -1111,8 +1197,9 @@ mod tests {
             let response = json!({
                 "choices": [{
                     "finish_reason": "tool_calls",
-                    "message": {"tool_calls": [{
+                    "message": {"role": "assistant", "tool_calls": [{
                         "id": "call_ws",
+                        "type": "function",
                         "function": {"name": "web_search", "arguments": arguments}
                     }]}
                 }]
@@ -1293,13 +1380,16 @@ mod tests {
     // -------------------------------------------------------------------------
 
     #[test]
-    fn message_item_without_content_gets_empty_content() {
-        let mapped = map(&json!({
+    fn message_item_without_content_returns_error() {
+        let error = map_error(&json!({
             "model": "m",
             "input": [{"role": "user"}]
         }));
 
-        assert_eq!(mapped["messages"][0]["content"], "");
+        assert_eq!(
+            error,
+            "Responses message input item is missing required field `content`"
+        );
     }
 
     #[test]
@@ -1316,25 +1406,23 @@ mod tests {
     }
 
     #[test]
-    fn untyped_item_with_content_key_maps_as_message() {
-        let mapped = map(&json!({
+    fn untyped_item_without_role_returns_error() {
+        let error = map_error(&json!({
             "model": "m",
             "input": [{"content": "implicit user"}]
         }));
 
-        assert_eq!(mapped["messages"][0]["role"], "user");
-        assert_eq!(mapped["messages"][0]["content"], "implicit user");
+        assert_eq!(error, "Responses message input item is missing required field `role`");
     }
 
     #[test]
-    fn non_object_input_items_are_skipped() {
-        let mapped = map(&json!({
+    fn non_object_input_items_return_error() {
+        let error = map_error(&json!({
             "model": "m",
             "input": [42, "bare string", {"role": "user", "content": "real"}]
         }));
 
-        assert_eq!(mapped["messages"].as_array().unwrap().len(), 1);
-        assert_eq!(mapped["messages"][0]["content"], "real");
+        assert_eq!(error, "Responses input item must be a JSON object");
     }
 
     // -------------------------------------------------------------------------
@@ -1378,8 +1466,8 @@ mod tests {
     }
 
     #[test]
-    fn text_parts_without_text_field_are_skipped() {
-        let mapped = map(&json!({
+    fn text_parts_without_text_field_return_error() {
+        let error = map_error(&json!({
             "model": "m",
             "input": [{
                 "role": "user",
@@ -1390,7 +1478,11 @@ mod tests {
             }]
         }));
 
-        assert_eq!(mapped["messages"][0]["content"], "valid");
+        assert_eq!(
+            error,
+            "unsupported Responses content part for Chat Completions translation: \
+             text content part requires a string `text` field"
+        );
     }
 
     #[test]
@@ -1431,26 +1523,8 @@ mod tests {
     // -------------------------------------------------------------------------
 
     #[test]
-    fn function_call_with_non_string_arguments_serializes_to_json() {
-        let mapped = map(&json!({
-            "model": "m",
-            "input": [{
-                "type": "function_call",
-                "call_id": "call_1",
-                "name": "get_weather",
-                "arguments": {"city": "NYC"}
-            }]
-        }));
-
-        assert_eq!(
-            mapped["messages"][0]["tool_calls"][0]["function"]["arguments"],
-            "{\"city\":\"NYC\"}"
-        );
-    }
-
-    #[test]
-    fn function_call_without_arguments_uses_empty_string() {
-        let mapped = map(&json!({
+    fn function_call_without_arguments_returns_error() {
+        let error = map_error(&json!({
             "model": "m",
             "input": [{
                 "type": "function_call",
@@ -1459,24 +1533,31 @@ mod tests {
             }]
         }));
 
-        assert_eq!(mapped["messages"][0]["tool_calls"][0]["function"]["arguments"], "");
+        assert_eq!(
+            error,
+            "Responses function_call input item is missing required field `arguments`"
+        );
     }
 
     #[test]
-    fn malformed_function_calls_without_call_id_or_name_are_dropped() {
-        let mapped = map(&json!({
+    fn malformed_function_calls_without_call_id_or_name_return_errors() {
+        let missing_id = map_error(&json!({
             "model": "m",
-            "input": [
-                {"type": "function_call", "name": "missing_id", "arguments": "{}"},
-                {"type": "function_call", "call_id": "missing_name", "arguments": "{}"},
-                {"type": "function_call", "call_id": "valid_call", "name": "valid_function", "arguments": "{}"}
-            ]
+            "input": [{"type": "function_call", "name": "missing_id", "arguments": "{}"}]
+        }));
+        let missing_name = map_error(&json!({
+            "model": "m",
+            "input": [{"type": "function_call", "call_id": "missing_name", "arguments": "{}"}]
         }));
 
-        let tool_calls = mapped["messages"][0]["tool_calls"].as_array().unwrap();
-        assert_eq!(tool_calls.len(), 1);
-        assert_eq!(tool_calls[0]["id"], "valid_call");
-        assert_eq!(tool_calls[0]["function"]["name"], "valid_function");
+        assert_eq!(
+            missing_id,
+            "Responses function_call input item is missing required field `call_id`"
+        );
+        assert_eq!(
+            missing_name,
+            "Responses function_call input item is missing required field `name`"
+        );
     }
 
     #[test]
@@ -1493,8 +1574,8 @@ mod tests {
     }
 
     #[test]
-    fn function_call_output_without_output_uses_empty_string() {
-        let mapped = map(&json!({
+    fn function_call_output_without_output_returns_error() {
+        let error = map_error(&json!({
             "model": "m",
             "input": [
                 {"type": "function_call", "call_id": "c1", "name": "f", "arguments": "{}"},
@@ -1502,7 +1583,23 @@ mod tests {
             ]
         }));
 
-        assert_eq!(mapped["messages"][1]["content"], "");
+        assert_eq!(
+            error,
+            "Responses function_call_output input item is missing required field `output`"
+        );
+    }
+
+    #[test]
+    fn function_call_output_without_call_id_returns_error() {
+        let error = map_error(&json!({
+            "model": "m",
+            "input": [{"type": "function_call_output", "output": "done"}]
+        }));
+
+        assert_eq!(
+            error,
+            "Responses function_call_output input item is missing required field `call_id`"
+        );
     }
 
     #[test]
@@ -1828,7 +1925,7 @@ mod tests {
     // -------------------------------------------------------------------------
 
     #[test]
-    fn response_with_no_choices_produces_empty_output() {
+    fn response_with_no_choices_is_rejected() {
         let request = json!({"model": "m", "input": "hello"});
         let context = make_response_context(&request);
         let response = json!({
@@ -1839,13 +1936,13 @@ mod tests {
             "choices": []
         });
 
-        let mapped = super::chat_completions::chat_response_to_response_resource(&response, &context).unwrap();
+        let error = super::chat_completions::chat_response_to_response_resource(&response, &context).unwrap_err();
 
-        assert_eq!(mapped["output"], json!([]));
+        assert!(error.to_string().contains("choices must contain an object"));
     }
 
     #[test]
-    fn response_without_choices_key_produces_empty_output() {
+    fn response_without_choices_key_is_rejected() {
         let request = json!({"model": "m", "input": "hello"});
         let context = make_response_context(&request);
         let response = json!({
@@ -1855,9 +1952,64 @@ mod tests {
             "model": "m"
         });
 
-        let mapped = super::chat_completions::chat_response_to_response_resource(&response, &context).unwrap();
+        let error = super::chat_completions::chat_response_to_response_resource(&response, &context).unwrap_err();
 
-        assert_eq!(mapped["output"], json!([]));
+        assert!(error.to_string().contains("choices must be an array"));
+    }
+
+    #[test]
+    fn malformed_first_choices_are_rejected() {
+        let request = json!({"model": "m", "input": "hello"});
+        let context = make_response_context(&request);
+        let malformed = [
+            (
+                "non-object choice",
+                json!({"choices": [null]}),
+                "choices must contain an object",
+            ),
+            (
+                "missing finish reason",
+                json!({"choices": [{"message": {"role": "assistant", "content": "ok"}}]}),
+                "first choice must contain a string finish_reason",
+            ),
+            (
+                "unsupported finish reason",
+                json!({
+                    "choices": [{
+                        "finish_reason": "unknown",
+                        "message": {"role": "assistant", "content": "ok"}
+                    }]
+                }),
+                "first choice contains an unsupported finish_reason",
+            ),
+            (
+                "missing message",
+                json!({"choices": [{"finish_reason": "stop"}]}),
+                "first choice must contain a message object",
+            ),
+            (
+                "invalid role",
+                json!({
+                    "choices": [{
+                        "finish_reason": "stop",
+                        "message": {"role": "user", "content": "ok"}
+                    }]
+                }),
+                "first choice message must have the assistant role",
+            ),
+            (
+                "missing output",
+                json!({"choices": [{"finish_reason": "stop", "message": {"role": "assistant"}}]}),
+                "first choice message has no supported output",
+            ),
+        ];
+
+        for (case, response, expected) in malformed {
+            let error =
+                super::chat_completions::chat_response_to_response_resource(&response, &context).expect_err(case);
+
+            assert!(error.to_string().contains(expected), "{case}: {error}");
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -1865,18 +2017,162 @@ mod tests {
     // -------------------------------------------------------------------------
 
     #[test]
-    fn response_with_empty_string_content_produces_no_message_output() {
+    fn response_with_empty_string_content_on_completed_is_rejected() {
         let request = json!({"model": "m", "input": "hello"});
         let context = make_response_context(&request);
         let response = simple_chat_response("stop", "");
 
-        let mapped = super::chat_completions::chat_response_to_response_resource(&response, &context).unwrap();
+        let error = super::chat_completions::chat_response_to_response_resource(&response, &context).unwrap_err();
 
-        assert_eq!(mapped["output"], json!([]));
+        assert!(
+            error
+                .to_string()
+                .contains("first choice message has no supported output"),
+            "{error}"
+        );
     }
 
     #[test]
-    fn response_with_null_content_produces_no_message_output() {
+    fn response_with_empty_array_content_on_completed_is_rejected() {
+        let request = json!({"model": "m", "input": "hello"});
+        let context = make_response_context(&request);
+        let response = json!({
+            "id": "chatcmpl-1",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "m",
+            "choices": [{"finish_reason": "stop", "index": 0, "message": {"role": "assistant", "content": []}}]
+        });
+
+        let error = super::chat_completions::chat_response_to_response_resource(&response, &context).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("first choice message has no supported output"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn response_with_only_empty_text_parts_on_completed_is_rejected() {
+        let request = json!({"model": "m", "input": "hello"});
+        let context = make_response_context(&request);
+        let response = json!({
+            "id": "chatcmpl-1",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "m",
+            "choices": [{
+                "finish_reason": "stop",
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": ""},
+                        {"type": "text", "text": ""}
+                    ]
+                }
+            }]
+        });
+
+        let error = super::chat_completions::chat_response_to_response_resource(&response, &context).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("first choice message has no supported output"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn response_with_only_empty_refusal_on_completed_is_rejected() {
+        let request = json!({"model": "m", "input": "hello"});
+        let context = make_response_context(&request);
+        let response = json!({
+            "id": "chatcmpl-1",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "m",
+            "choices": [{
+                "finish_reason": "stop",
+                "index": 0,
+                "message": {"role": "assistant", "content": null, "refusal": ""}
+            }]
+        });
+
+        let error = super::chat_completions::chat_response_to_response_resource(&response, &context).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("first choice message has no supported output"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn response_with_empty_content_on_incomplete_terminal_is_preserved() {
+        let request = json!({"model": "m", "input": "hello"});
+        let context = make_response_context(&request);
+        for empty in [json!(""), json!([]), json!([{"type": "text", "text": ""}])] {
+            let response = json!({
+                "id": "chatcmpl-1",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "m",
+                "choices": [{
+                    "finish_reason": "length",
+                    "index": 0,
+                    "message": {"role": "assistant", "content": empty}
+                }]
+            });
+
+            let mapped = super::chat_completions::chat_response_to_response_resource(&response, &context)
+                .expect("incomplete terminal with empty content should be preserved");
+
+            assert_eq!(mapped["status"], "incomplete", "{empty}");
+            assert_eq!(
+                mapped["incomplete_details"],
+                json!({"reason": "max_output_tokens"}),
+                "{empty}"
+            );
+            assert_eq!(mapped["output"], json!([]), "{empty}");
+        }
+    }
+
+    #[test]
+    fn response_with_mixed_empty_and_nonempty_parts_keeps_nonempty() {
+        let request = json!({"model": "m", "input": "hello"});
+        let context = make_response_context(&request);
+        let response = json!({
+            "id": "chatcmpl-1",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "m",
+            "choices": [{
+                "finish_reason": "stop",
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": ""},
+                        {"type": "text", "text": "kept"}
+                    ]
+                }
+            }]
+        });
+
+        let mapped = super::chat_completions::chat_response_to_response_resource(&response, &context).unwrap();
+
+        let content = mapped["output"][0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["text"], "kept");
+    }
+
+    #[test]
+    fn response_with_null_content_on_completed_is_rejected() {
         let request = json!({"model": "m", "input": "hello"});
         let context = make_response_context(&request);
         let response = json!({
@@ -1887,9 +2183,44 @@ mod tests {
             "choices": [{"finish_reason": "stop", "index": 0, "message": {"role": "assistant", "content": null}}]
         });
 
-        let mapped = super::chat_completions::chat_response_to_response_resource(&response, &context).unwrap();
+        let error = super::chat_completions::chat_response_to_response_resource(&response, &context).unwrap_err();
 
-        assert_eq!(mapped["output"], json!([]));
+        assert!(
+            error
+                .to_string()
+                .contains("first choice message has no supported output"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn response_with_null_content_on_incomplete_terminal_is_preserved() {
+        let request = json!({"model": "m", "input": "hello"});
+        let context = make_response_context(&request);
+        for (finish_reason, reason) in [("length", "max_output_tokens"), ("content_filter", "content_filter")] {
+            let response = json!({
+                "id": "chatcmpl-1",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "m",
+                "choices": [{
+                    "finish_reason": finish_reason,
+                    "index": 0,
+                    "message": {"role": "assistant", "content": null}
+                }]
+            });
+
+            let mapped =
+                super::chat_completions::chat_response_to_response_resource(&response, &context).expect(finish_reason);
+
+            assert_eq!(mapped["status"], "incomplete", "{finish_reason}");
+            assert_eq!(
+                mapped["incomplete_details"],
+                json!({"reason": reason}),
+                "{finish_reason}"
+            );
+            assert_eq!(mapped["output"], json!([]), "{finish_reason}");
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -2211,7 +2542,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_call_missing_function_fields_uses_defaults() {
+    fn tool_call_missing_function_fields_is_rejected() {
         let request = json!({"model": "m", "input": "hello"});
         let context = make_response_context(&request);
         let response = json!({
@@ -2230,10 +2561,13 @@ mod tests {
             }]
         });
 
-        let mapped = super::chat_completions::chat_response_to_response_resource(&response, &context).unwrap();
+        let error = super::chat_completions::chat_response_to_response_resource(&response, &context).unwrap_err();
 
-        assert_eq!(mapped["output"][0]["name"], "");
-        assert_eq!(mapped["output"][0]["arguments"], "{}");
+        assert!(
+            error
+                .to_string()
+                .contains("message contains an invalid function tool call")
+        );
     }
 
     // -------------------------------------------------------------------------

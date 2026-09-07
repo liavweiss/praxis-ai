@@ -24,6 +24,7 @@ mod gcp_adc;
 mod guardrails;
 mod guardrails_response;
 mod inference_fallback;
+mod irr_terminal_streaming;
 #[cfg(feature = "http-callout-filter")]
 mod lakera_guard;
 #[cfg(feature = "llmd-ext-proc")]

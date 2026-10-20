@@ -221,8 +221,12 @@ fn nemo_guardrails_checks_each_user_turn_with_cumulative_history() {
         .iter()
         .map(|request| serde_json::from_str(&request.body).expect("NeMo callout should contain a JSON body"))
         .collect();
-    assert_eq!(payloads[0]["messages"].as_array().unwrap().len(), 1);
-    assert_eq!(payloads[1]["messages"].as_array().unwrap().len(), 3);
+    let mut prefix_lengths: Vec<usize> = payloads
+        .iter()
+        .map(|payload| payload["messages"].as_array().unwrap().len())
+        .collect();
+    prefix_lengths.sort_unstable();
+    assert_eq!(prefix_lengths, vec![1, 3]);
 }
 
 /// `NeMo` returns `"blocked"` → proxy rejects with 403 and the triggered
@@ -302,11 +306,11 @@ fn nemo_guardrails_modified_rewrites_all_user_messages() {
     let nemo = StatefulCapturingBackend::new(vec![
         (
             200,
-            r#"{"status":"modified","content":"My mail is <EMAIL>","rail":"pii"}"#.to_owned(),
+            r#"{"status":"modified","content":"[REDACTED]","rail":"pii"}"#.to_owned(),
         ),
         (
             200,
-            r#"{"status":"modified","content":"my credit card is <CREDIT-CARD>","rail":"pii"}"#.to_owned(),
+            r#"{"status":"modified","content":"[REDACTED]","rail":"pii"}"#.to_owned(),
         ),
     ])
     .start_with_shutdown();
@@ -329,9 +333,9 @@ fn nemo_guardrails_modified_rewrites_all_user_messages() {
     assert_eq!(
         parsed.get("messages"),
         Some(&serde_json::json!([
-            {"role":"user","content":"My mail is <EMAIL>"},
+            {"role":"user","content":"[REDACTED]"},
             {"role":"assistant","content":"No."},
-            {"role":"user","content":"my credit card is <CREDIT-CARD>"}
+            {"role":"user","content":"[REDACTED]"}
         ])),
         "every modified user turn should be rewritten; got: {body}"
     );

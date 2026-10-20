@@ -3572,6 +3572,7 @@ dependencies = [
  "bytes",
  "chrono",
  "dashmap",
+ "futures",
  "http",
  "metrics",
  "metrics-util",
